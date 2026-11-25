@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>图片编辑指令</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+      --page:#f5f7fb; --card:#fff; --field:#fff; --raised:#f7f9fc;
+      --ink:#17243a; --muted:#56667f; --line:#dce4ef;
+      --accent:#244fcf; --accent-soft:#eaf0ff; --accent-text:#2246a7;
+      --danger:#a52c3e; --danger-soft:#fff0f2; --ok:#19714c; --ok-soft:#e8f7ef;
+      --warning:#8c4e06; --warning-soft:#fff3df; --shadow:0 6px 20px #1a2e4e0a;
+    }
+    @media(prefers-color-scheme:dark) {
+      :root{
+        --page:#101622; --card:#192233; --field:#121a29; --raised:#1e2a3e;
+        --ink:#eaf0fa; --muted:#aebbd0; --line:#35435b;
+        --accent:#4169e8; --accent-soft:#243658; --accent-text:#b7cbff;
+        --danger:#ffabb9; --danger-soft:#3c2330; --ok:#92dfb9; --ok-soft:#1c3b33;
+        --warning:#ffd393; --warning-soft:#42321e; --shadow:0 8px 24px #0002;
+      }
+    }
+    *{box-sizing:border-box}
+    [hidden]{display:none!important}
+    body{margin:0;padding:26px 26px 42px;color:var(--ink);background:var(--page);line-height:1.55}
+    main{max-width:1180px;margin:auto}
+    h1,h2,h3,p{margin:0}
+    h1{font-size:clamp(1.65rem,4vw,2.15rem);letter-spacing:-.035em;line-height:1.2}
+    h2{font-size:1.15rem;line-height:1.3}
+    h3{font-size:.96rem}
+    .subtext,.hint{color:var(--muted);font-size:.88rem}
+    .header{display:flex;justify-content:space-between;align-items:end;flex-wrap:wrap;gap:18px;margin-bottom:18px}
+    .header p{margin-top:6px}
+    .switcher{display:flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+    .switcher button{border-color:transparent;min-height:34px}
+    .switcher [aria-pressed="true"]{background:var(--accent-soft);color:var(--accent-text)}
+    button,input,textarea,select{font:inherit}
+    button{min-height:36px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);cursor:pointer;font-size:.84rem;font-weight:600;white-space:nowrap}
+    button:hover:not(:disabled){background:var(--raised);border-color:var(--muted)}
+    button:disabled{opacity:.52;cursor:not-allowed}
+    button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    .primary{background:var(--accent);border-color:var(--accent);color:#fff}
+    .primary:hover:not(:disabled){background:color-mix(in srgb,var(--accent) 85%,black);border-color:var(--accent)}
+    .danger{color:var(--danger)}
+    .danger:hover:not(:disabled){background:var(--danger-soft);border-color:var(--danger)}
+    .workspace{display:grid;grid-template-columns:minmax(185px,242px) minmax(0,1fr);align-items:start;gap:16px}
+    .sidebar,.profile-card,.guide,.diagnostic-panel{background:var(--card);border:1px solid var(--line);border-radius:13px;box-shadow:var(--shadow)}
+    .sidebar{padding:14px;position:sticky;top:12px}
+    .sidebar-top,.profile-summary,.option-head,.section-head,.action-bar,.diagnostic-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .sidebar-top{margin-bottom:10px}
+    .sidebar label{margin:0}
+    .group-list{display:grid;gap:5px;margin-top:10px;max-height:54vh;overflow:auto;overscroll-behavior:contain}
+    .group-link{display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;background:transparent;border-color:transparent;padding:8px 9px;min-width:0;min-height:40px}
+    .group-link[aria-current="true"]{background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 27%,var(--line));color:var(--accent-text)}
+    .group-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .group-count{flex:none;color:var(--muted);font-size:.75rem;font-variant-numeric:tabular-nums}
+    .nav-empty{margin:5px 2px;color:var(--muted);font-size:.84rem}
+    .profile-card{padding:17px}
+    .profile-summary,.option-head,.section-head,.diagnostic-head{flex-wrap:wrap}
+    .profile-summary{border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:12px}
+    .profile-title{overflow-wrap:anywhere}
+    .profile-actions,.option-actions,.actions{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+    .profile-command{max-width:540px}
+    .direct-editor-row{display:flex;align-items:center;gap:8px;margin-top:12px}
+    .direct-editor-row input{width:auto;accent-color:var(--accent)}
+    .direct-editor-row input:disabled + span{color:var(--muted)}
+    label{display:grid;gap:5px;color:var(--ink);margin:0;font-size:.86rem;font-weight:600}
+    input,textarea,select{width:100%;min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--field);color:var(--ink);font-weight:400;outline:none}
+    input:focus,textarea:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 17%,transparent)}
+    input::placeholder,textarea::placeholder{color:var(--muted)}
+    textarea{min-height:111px;resize:vertical;line-height:1.6}
+    .options-box{margin-top:20px}
+    .section-head{margin-bottom:9px}
+    .options-list{display:grid;gap:8px}
+    .option-row{min-width:0;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+    .option-head{padding:7px 9px;gap:6px}
+    .option-title{flex:1;min-width:min(100%,160px);text-align:left;white-space:normal;overflow-wrap:anywhere;background:transparent;border-color:transparent}
+    .option-title::before{content:"▸";margin-right:7px;color:var(--accent-text)}
+    .option-title[aria-expanded="true"]::before{content:"▾"}
+    .option-actions{gap:5px}
+    .small-button{font-size:.79rem;min-height:31px;padding:4px 8px}
+    .option-body{display:grid;gap:12px;border-top:1px solid var(--line);padding:12px;background:var(--raised);border-radius:0 0 9px 9px}
+    .lora-config{padding-top:10px;border-top:1px solid var(--line)}
+    .lora-config-title{font-size:.85rem;font-weight:700;margin-bottom:7px}
+    .lora-rows{display:grid;gap:7px}
+    .lora-row{display:grid;grid-template-columns:minmax(0,2fr) minmax(100px,1fr) auto;gap:8px;align-items:end}
+    .add-lora{margin-top:8px}
+    .lora-help{margin-top:5px;color:var(--muted);font-size:.79rem}
+    .mask-lora-section + .mask-lora-section{margin-top:12px}
+    .mask-lora-section summary{cursor:pointer;font-weight:650;padding:8px 0}
+    .mask-lora-row{display:grid;grid-template-columns:minmax(0,2fr) auto minmax(76px,1fr) minmax(76px,1fr);gap:10px;align-items:center;border-top:1px solid var(--line);padding:8px 0}
+    .mask-lora-row .direct-editor-row{margin:0;white-space:nowrap}
+    .mask-lora-name{overflow-wrap:anywhere}
+    .move-dialog{width:min(430px,calc(100% - 24px));max-height:85vh;padding:18px;border:1px solid var(--line);border-radius:13px;background:var(--card);color:var(--ink);box-shadow:var(--shadow)}
+    .move-dialog::backdrop{background:#10182782}
+    .move-dialog form{display:grid;gap:12px}
+    .move-dialog .actions{justify-content:flex-end}
+    .move-dialog .hint{overflow-wrap:anywhere}
+    .empty{border:1px dashed var(--line);border-radius:12px;background:var(--card);padding:32px 14px;text-align:center;color:var(--muted)}
+    .editor-wrap{min-width:0}
+    .action-bar{position:sticky;bottom:0;z-index:4;margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:11px;background:var(--card);box-shadow:0 -3px 18px #1a2e4e13;flex-wrap:wrap}
+    .save-state{font-size:.82rem;color:var(--muted)}
+    .save-state[data-dirty="true"]{color:var(--warning);font-weight:700}
+    #status{flex-basis:100%;font-size:.84rem;overflow-wrap:anywhere}
+    #status:empty{display:none}
+    #status[data-kind="error"]{color:var(--danger)}
+    #status[data-kind="success"]{color:var(--ok)}
+    .guide{padding:10px 13px;margin-top:12px}
+    .guide summary{cursor:pointer;font-weight:650;font-size:.87rem}
+    .guide p{margin-top:6px}
+    code{font-size:.9em;padding:1px 4px;border-radius:4px;background:var(--raised)}
+    .diagnostic-panel{padding:17px}
+    .diagnostic-content{margin-top:13px;display:grid;gap:14px}
+    .health-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+    .health-item{padding:11px;border:1px solid var(--line);border-radius:9px;background:var(--raised)}
+    .health-item p{margin-top:4px;font-size:.85rem;color:var(--muted)}
+    .health-item[data-state="ok"]{background:var(--ok-soft)}
+    .health-item[data-state="warning"]{background:var(--warning-soft)}
+    .table-wrap{overflow:auto;border:1px solid var(--line);border-radius:9px}
+    table{width:100%;border-collapse:collapse;text-align:left;font-size:.84rem}
+    th,td{padding:8px 10px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+    th{background:var(--raised);font-weight:700}
+    tr:last-child td{border-bottom:0}
+    .task-table{min-width:490px;font-variant-numeric:tabular-nums}
+    @media(max-width:690px){
+      body{padding:16px 12px 30px}
+      .workspace{grid-template-columns:minmax(0,1fr);gap:10px}
+      .sidebar{position:static;padding:10px}
+      .group-list{display:flex;flex-wrap:wrap;max-height:160px}
+      .group-link{border-color:var(--line)}
+      .profile-card,.diagnostic-panel{padding:12px}
+    }
+    @media(max-width:420px){
+      .lora-row{grid-template-columns:1fr 1fr}
+      .lora-row .remove-lora{justify-self:start}
+      .mask-lora-row{grid-template-columns:1fr 1fr}
+      .mask-lora-name{grid-column:1/-1}
+      .health-grid{grid-template-columns:1fr}
+      .action-bar{gap:6px}
+      .save-state{flex-basis:100%}
+      .action-bar .actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));width:100%}
+      .action-bar button{padding-inline:5px}
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="header">
+      <div>
+        <h1>图片编辑指令</h1>
+        <p class="subtext">配置 QQ 改图菜单、编辑模板和 LoRA。</p>
+      </div>
+      <nav class="switcher" aria-label="管理页面">
+        <button type="button" id="show-editor" aria-pressed="true">指令与选项</button>
+        <button type="button" id="show-multiview" aria-pressed="false">多视图提示词</button>
+        <button type="button" id="show-workflows" aria-pressed="false">工作流库</button>
+        <button type="button" id="show-diagnostics" aria-pressed="false">运行诊断</button>
+      </nav>
+    </header>
+    <section id="editor-panel" class="workspace" aria-label="指令与选项">
+      <aside class="sidebar">
+        <div class="sidebar-top">
+          <h2>指令组</h2>
+          <button type="button" id="add-profile">＋ 添加</button>
+        </div>
+        <label>
+          <span>搜索指令组</span>
+          <input id="profile-search" type="search" placeholder="匹配指令名或选项名" autocomplete="off">
+        </label>
+        <nav id="profile-nav" class="group-list" aria-label="指令组列表"></nav>
+      </aside>
+      <div class="editor-wrap">
+        <div id="profiles"></div>
+        <div class="action-bar">
+          <span id="save-state" class="save-state">正在读取配置…</span>
+          <div class="actions">
+            <button id="restore-profiles" type="button" disabled>恢复上一版</button>
+            <button id="validate-profiles" type="button" disabled>校验配置</button>
+            <button id="save-profiles" class="primary" type="button" disabled>保存更改</button>
+          </div>
+          <div id="status" role="status" aria-live="polite"></div>
+        </div>
+        <details class="guide">
+          <summary>QQ 使用说明</summary>
+          <p class="hint">引用原图发送指令，或同一条消息发送图片和指令。引用机器人发出的菜单回复选项名或序号，例如 <code>1,3</code>。菜单有效期为 10 分钟。</p>
+          <p class="hint">可用 <code>2=黑色/过膝</code> 按顺序填写占位符，也可用 <code>2+白色房子</code> 在提示词末尾补充要求。收到追问时可一次补齐，或回复「跳过」「取消」。</p>
+          <p class="hint">同一个 LoRA 被多个选项选中时，按菜单顺序取靠前的强度。「放大」单选时直接放大原图。GPT Image 回退时会跳过 LoRA 和放大。</p>
+        </details>
+      </div>
+    </section>
+    <section id="multiview-panel" class="diagnostic-panel" aria-labelledby="multiview-title" hidden>
+      <div class="diagnostic-head">
+        <div>
+          <h2 id="multiview-title">「生成多视图」提示词配置</h2>
+          <p class="hint">维护单张参考图生成三视图及 6 种生成方式（动漫表情 / 写实表情 / 12张动作差分 / 12机位多角度 / 自定义单图 / 12机位多角度里图）的提示词组合。</p>
+        </div>
+        <div class="actions">
+          <button id="multiview-reset" class="danger" type="button">恢复默认提示词</button>
+          <button id="multiview-save" class="primary" type="button">保存多视图提示词</button>
+        </div>
+      </div>
+      <p id="multiview-status" class="hint" role="status" aria-live="polite"></p>
+      <div id="multiview-fields" class="diagnostic-content"></div>
+    </section>
+    <section id="workflows-panel" class="diagnostic-panel" aria-labelledby="workflows-title" hidden>
+      <div class="diagnostic-head">
+        <div>
+          <h2 id="workflows-title">工作流库</h2>
+          <p class="hint">导入 ComfyUI API JSON。保存后可在「指令与选项」中绑定指令组。</p>
+        </div>
+        <button id="refresh-workflows" type="button">刷新列表</button>
+      </div>
+      <div id="workflow-library-list" class="diagnostic-content"></div>
+      <p id="mask-library-state" class="hint"></p>
+      <form id="workflow-import" class="diagnostic-content">
+        <h3>导入或替换工作流</h3>
+        <label>替换对象<select id="workflow-existing"></select></label>
+        <label>显示名称<input id="workflow-name" required maxlength="40"></label>
+        <label>类型<select id="workflow-kind"><option value="qwen">Qwen 普通改图</option><option value="mask">带遮罩的局部重绘</option></select></label>
+        <label>ComfyUI API JSON<input id="workflow-file" required type="file" accept=".json,application/json"></label>
+        <div id="workflow-bindings" class="health-grid"></div>
+        <div class="actions"><button id="workflow-save" class="primary" type="submit" disabled>保存到工作流库</button></div>
+        <p id="workflow-status" class="hint" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+    <section id="diagnostics-panel" class="diagnostic-panel" aria-labelledby="diagnostics-title" hidden>
+      <div class="diagnostic-head">
+        <div>
+          <h2 id="diagnostics-title">运行诊断</h2>
+          <p class="hint">查看后端连通性、工作流节点和近期任务耗时。</p>
+        </div>
+        <button id="refresh-diagnostics" class="primary" type="button">开始检查</button>
+      </div>
+      <div id="diagnostics-output" class="diagnostic-content" aria-live="polite">
+        <p class="hint">检查不会提交生成任务。</p>
+      </div>
+    </section>
+  </main>
+  <dialog id="move-option-dialog" class="move-dialog" aria-labelledby="move-option-title" aria-describedby="move-option-hint">
+    <form>
+      <h2 id="move-option-title">移动菜单选项</h2>
+      <p id="move-option-name" class="hint"></p>
+      <label>
+        <span>目标指令组</span>
+        <select id="move-option-target" required autofocus></select>
+      </label>
+      <p id="move-option-hint" class="hint"></p>
+      <div class="actions">
+        <button id="move-option-cancel" type="button">取消</button>
+        <button id="move-option-confirm" class="primary" type="submit" disabled>移动选项</button>
+      </div>
+    </form>
+  </dialog>
+  <script src="./app.js?v=20261124-perf-pack" defer></script>
+</body>
+</html>

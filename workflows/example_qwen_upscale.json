@@ -1,0 +1,159 @@
+{
+  "2": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "example.png"
+    },
+    "_meta": {
+      "title": "Load Image",
+      "hub": {
+        "image": "image"
+      }
+    }
+  },
+  "3": {
+    "class_type": "AUSBOSS_NODES_TiledUpscale",
+    "inputs": {
+      "image": ["2", 0],
+      "megapixels": 4.0,
+      "tile_megapixels": 2.0,
+      "overlap": 128,
+      "multiple": 32,
+      "max_growth": 8.0
+    },
+    "_meta": {
+      "title": "Tiled Upscale - Megapixels of the result",
+      "hub": {
+        "megapixels": "megapixels"
+      }
+    }
+  },
+  "8": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "_meta": {
+      "title": "Text encoder"
+    }
+  },
+  "9": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+    },
+    "_meta": {
+      "title": "VAE"
+    }
+  },
+  "10": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "_meta": {
+      "title": "Diffusion model"
+    }
+  },
+  "11": {
+    "class_type": "AUSBOSS_NODES_LoraLoader",
+    "inputs": {
+      "model": ["10", 0],
+      "loras": "[{\"name\": \"Qwenimage21/qwen-image-2.1-restore.safetensors\", \"strength\": 1.0, \"enabled\": true, \"triggers\": \"\"}, {\"name\": \"Qwenimage21/Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors\", \"strength\": 1.0, \"enabled\": false, \"triggers\": \"\"}]",
+      "trigger_separator": ", ",
+      "on_missing": "error"
+    },
+    "_meta": {
+      "title": "LoRA Loader - Restore LoRA",
+      "hub": {
+        "loras": "loras"
+      }
+    }
+  },
+  "16": {
+    "class_type": "TextEncodeQwenImage21",
+    "inputs": {
+      "clip": ["8", 0],
+      "images.image_1": ["3", 0],
+      "vae": ["9", 0],
+      "prompt": "Restore the photo: remove blur, noise and compression artifacts and recover sharp, natural detail, keeping the same composition, people and colors.",
+      "negative_prompt": "",
+      "resolution": 0
+    },
+    "_meta": {
+      "title": "Text Encode Qwen Image 2.1 - One tile and the request",
+      "hub": {
+        "positive": "prompt"
+      }
+    }
+  },
+  "17": {
+    "class_type": "QwenImage21Cache",
+    "inputs": {
+      "model": ["11", 0],
+      "device": "auto",
+      "dtype": "default"
+    },
+    "_meta": {
+      "title": "Reference cache"
+    }
+  },
+  "20": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["17", 0],
+      "positive": ["16", 0],
+      "negative": ["16", 1],
+      "latent_image": ["16", 2],
+      "seed": 20261006,
+      "steps": 25,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0
+    },
+    "_meta": {
+      "title": "Sampler - CFG 1, euler",
+      "hub": {
+        "steps": "steps"
+      }
+    }
+  },
+  "21": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["20", 0],
+      "vae": ["9", 0]
+    },
+    "_meta": {
+      "title": "Decode"
+    }
+  },
+  "22": {
+    "class_type": "AUSBOSS_NODES_TiledUpscaleStitch",
+    "inputs": {
+      "tiles": ["21", 0],
+      "stitcher": ["3", 1],
+      "keep_colors": 1.0
+    },
+    "_meta": {
+      "title": "Tiled Upscale Stitch - Join the tiles"
+    }
+  },
+  "13": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["22", 0],
+      "filename_prefix": "qwen21_tiled_upscale"
+    },
+    "_meta": {
+      "title": "Save Image",
+      "hub": {
+        "output": null
+      }
+    }
+  }
+}

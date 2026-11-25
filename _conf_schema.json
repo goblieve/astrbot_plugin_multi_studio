@@ -1,0 +1,292 @@
+{
+  "server_url": {
+    "description": "ComfyUI 服务器地址",
+    "type": "string",
+    "default": "http://127.0.0.1:8188",
+    "hint": "ComfyUI API 服务器的完整地址，例如 http://127.0.0.1:8188"
+  },
+  "timeout": {
+    "description": "生成超时时间（秒）",
+    "type": "int",
+    "default": 300,
+    "hint": "等待图片生成的最长时间，超时将返回失败"
+  },
+  "default_chain": {
+    "description": "默认使用合并转发",
+    "type": "bool",
+    "default": false,
+    "hint": "是否默认以合并转发形式发送图片（仅 aiocqhttp 平台支持）"
+  },
+  "enable_qwen": {
+    "description": "启用 /draw（Qwen 2.1）",
+    "type": "bool",
+    "default": true,
+    "hint": "无图时生成，有图时编辑；官方支持 10 张参考图，本地 ComfyUI 节点提供 16 个输入，按顺序完整传入"
+  },
+  "qwen_workflow": {
+    "description": "Qwen 2.1 自定义工作流",
+    "type": "string",
+    "default": "",
+    "hint": "留空使用内置 example_qwen_image.json。自定义 API JSON 放入 plugin_data/astrbot_plugin_multi_studio/workflows，并在节点 _meta.hub 中声明绑定。"
+  },
+  "draw_lora_aliases": {
+    "description": "/draw 的 LoRA 指令别名",
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "default": [
+      "NSFW基础=Qwen-Image-2.1 NSFW Image EditV2.safetensors",
+      "骆驼趾=Qwen21 - Cameltoe.safetensors",
+      "内阴=qwen2_1-femaledVaginus-inniepussy-v1_0.safetensors",
+      "贫乳=Qwen21 - Flat Chested v1.1.safetensors",
+      "胸部大小=breasts_slider_qwen-inage2.1_v1.safetensors",
+      "二转三=SinoX_QW2.1_Anything2Real_v2.0_r64.safetensors",
+      "连裤袜=QWEN2.1-Opaque_pantyhose_c1-st6000.safetensors"
+    ],
+    "hint": "每项写成 别名=LoRA文件名.safetensors。只对 Qwen /draw 生效，文件名需与 VisualLoRALoader 中一致；别名不能有空格。指令示例：/draw --lora 贫乳=0.8 提示词。数值同时覆盖 M（strength_model）和 C（strength_clip）；无参数保留默认开关，--lora off 关闭全部。"
+  },
+  "draw_prompt_presets": {
+    "description": "/draw 固定提示词预设",
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "default": [],
+    "hint": "每项写成 预设名=提示词模板。可在模板中使用 {prompt} 插入本次提示词，也可包含 --lora 别名=强度；命令单独指定的 --lora 会覆盖预设内全部 LoRA。"
+  },
+  "draw_edit_options": {
+    "description": "旧版单一改图选项（兼容保留）",
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "collapsed": true,
+    "default": [
+      "去除路人=仅移除画面中的路人和无关人物，完整保留主要人物或主体、服装、姿势、构图、背景和光线；自然补全被遮挡的区域。",
+      "去除背景=移除原有背景并替换为干净的纯白背景；保持主体完整，保留边缘细节、姿势、服装和受光，不要改变主体本身。",
+      "去除主体=移除画面中的主要人物或主体，并依据周围环境自然补全其遮挡区域；保留其余物体、背景、构图和光线。",
+      "去水印=仅移除画面中的可见水印（包括半透明叠加水印、角落水印和重复平铺水印），根据周围区域的纹理、颜色、光线与透视自然修复被遮挡部分；保持人物、其他主体、构图、背景、色彩、清晰度及所有非水印文字原样不变，不改动水印以外的区域，不新增内容。"
+    ],
+    "hint": "旧版配置会迁移到默认“改图”指令组。选项名为“放大”时控制 Qwen 工作流放大节点且不使用提示词；单独选择时直接放大原图。请通过插件 WebUI 的“图片编辑指令”页面管理多个指令组及各自选项。"
+  },
+  "draw_edit_command_profiles": {
+    "description": "图片编辑指令组（由插件 WebUI 管理）",
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "collapsed": true,
+    "default": [],
+    "hint": "内部配置项。请使用插件 WebUI 的“图片编辑指令”页面，为每个触发指令配置自己的选项和提示词。"
+  },
+  "enable_txt2img": {
+    "description": "启用 /draw_sd（SD 动漫）",
+    "type": "bool",
+    "default": true,
+    "hint": "保留原 SD 文生图模型与低资源生成路径"
+  },
+  "sd_workflow": {
+    "description": "SD 动漫 自定义工作流",
+    "type": "string",
+    "default": "",
+    "hint": "留空使用内置 example_sd_image.json。自定义 API JSON 放入 plugin_data/astrbot_plugin_multi_studio/workflows，并在节点 _meta.hub 中声明绑定。"
+  },
+  "default_negative_prompt": {
+    "description": "SD 默认负面提示词",
+    "type": "text",
+    "default": "bad hands, low quality, blurry",
+    "hint": "仅用于 /draw_sd；Qwen 默认负面提示词为空"
+  },
+  "enable_img2video": {
+    "description": "启用图生视频功能",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后允许使用图生视频功能（需要图片+提示词）"
+  },
+  "video_workflow": {
+    "description": "视频 自定义工作流",
+    "type": "string",
+    "default": "",
+    "hint": "留空使用内置 example_wan_video.json。自定义 API JSON 放入 plugin_data/astrbot_plugin_multi_studio/workflows，并在节点 _meta.hub 中声明绑定。"
+  },
+  "img2video_max_frames": {
+    "description": "最大总帧数",
+    "type": "int",
+    "default": 240,
+    "hint": "fps × 视频长度（秒）的上限。超过时会自动缩短视频长度以满足上限。设为 0 则不限制"
+  },
+  "enable_tagger": {
+    "description": "启用图片标签识别功能",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后允许使用图片标签识别功能"
+  },
+  "tagger_workflow": {
+    "description": "Tagger 自定义工作流",
+    "type": "string",
+    "default": "",
+    "hint": "留空使用内置 example_tagger.json。自定义 API JSON 放入 plugin_data/astrbot_plugin_multi_studio/workflows，并在节点 _meta.hub 中声明绑定。"
+  },
+  "enable_group_whitelist": {
+    "description": "启用群聊白名单",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后仅 whitelist_groups 内的群可使用本插件功能；列表为空时所有群均无法使用"
+  },
+  "whitelist_groups": {
+    "description": "群聊白名单",
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "default": [],
+    "hint": "允许使用本插件的群号列表（字符串），逐项填入"
+  },
+  "enable_user_whitelist": {
+    "description": "启用私聊白名单",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后仅 whitelist_users 内的用户可在私聊中使用本插件功能；列表为空时私聊均无法使用"
+  },
+  "whitelist_users": {
+    "description": "私聊用户白名单",
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "default": [],
+    "hint": "允许在私聊中使用本插件的用户ID列表（字符串），逐项填入"
+  },
+  "whitelist_admin_bypass": {
+    "description": "管理员绕过白名单",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后管理员发送的请求将跳过白名单检查"
+  },
+  "whitelist_reject_message": {
+    "description": "白名单外拒绝消息",
+    "type": "text",
+    "default": "⚠️ 当前会话未在白名单内，绘图服务暂不可用。",
+    "hint": "白名单外的会话使用本插件命令时返回的提示文本，支持换行；留空则静默忽略不返回任何消息"
+  },
+  "enable_input_censorship": {
+    "description": "启用输入审查",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后将对用户输入的提示词进行审查（文本审查）"
+  },
+  "input_censorship_use_llm": {
+    "description": "输入审查使用LLM",
+    "type": "bool",
+    "default": true,
+    "hint": "输入审查时是否使用LLM对提示词进行智能判断"
+  },
+  "enable_output_censorship": {
+    "description": "启用输出审查",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后将对生成的图片进行审查"
+  },
+  "output_censorship_use_llm": {
+    "description": "输出审查使用多模态LLM审查图片",
+    "type": "bool",
+    "default": true,
+    "hint": "输出审查时是否使用多模态LLM直接审查图片内容"
+  },
+  "output_censorship_use_tagger": {
+    "description": "输出审查使用Tagger",
+    "type": "bool",
+    "default": true,
+    "hint": "输出审查时是否使用Tagger获取图片标签并进行关键词审查（无LLM参与）"
+  },
+  "censorship_prompt": {
+    "description": "输入审查系统提示词",
+    "type": "string",
+    "default": "你是一个内容安全审核员，必须严格遵循\"疑罪从无\"的原则。你需要判断以下内容（Danbooru标签）是否包含R18级别的完全裸露内容。\\n\\n关键概念（必须严格执行）：\\n乳头和乳晕是两个完全不同的部位。乳晕（areola）是乳头周围的色素区域，乳头（nipple）是乳房顶端的小突起。乳晕可见不代表乳头可见。标签中出现\"areola\"时，仅表示乳晕可见，这不属于R18内容，不违规。\\n\\n同样，乳房（breasts）、乳沟（cleavage）都是描述乳房这个器官，不是描述乳头，不违规。\\n\\n违规的唯一情况：\\n标签的语义明确表达\"乳头本身可见\"、\"生殖器官本身可见\"或\"肛门本身可见\"。\\n\\n判定逻辑：\\n- 如果标签表达的是\"乳头可见\"→违规\\n- 如果标签表达的是\"乳晕可见\"→不违规\\n- 如果标签表达的是\"乳房存在/乳沟\"→不违规\\n- 如果标签表达的是\"生殖器官可见\"→违规\\n- 如果标签表达的是\"肛门可见\"→违规\\n- 其他所有情况→不违规\\n\\n只回复 yes 或 no，不要附加任何其他任何内容。\\n违规回复 yes，不违规回复 no。",
+    "hint": "输入审查（文本审查）时使用的系统提示词，仅用于审查用户输入的提示词"
+  },
+  "output_censorship_prompt": {
+    "description": "输出审查系统提示词（多模态LLM）",
+    "type": "string",
+    "default": "你是一个内容安全审核员，必须严格遵循\"疑罪从无\"的原则。你需要判断这张图片是否包含R18级别的完全裸露内容。\\n\\n关键概念（必须严格执行）：\\n乳头和乳晕是两个完全不同的部位。乳晕是乳头周围的色素区域，乳头是乳房顶端的小突起。乳晕可见不代表乳头可见。\\n\\n同样，乳房、乳沟都是描述乳房这个器官，不是描述乳头，不违规。\\n\\n违规的唯一情况：\\n图片中明确可见乳头本身、生殖器官本身或肛门本身。\\n\\n判定逻辑：\\n- 如果图片中乳头可见→违规\\n- 如果图片中乳晕可见→不违规\\n- 如果图片中乳房/乳沟可见→不违规\\n- 如果图片中生殖器官可见→违规\\n- 如果图片中肛门可见→违规\\n- 其他所有情况→不违规\\n\\n只回复 yes 或 no，不要附加任何其他任何内容。\\n违规回复 yes，不违规回复 no。",
+    "hint": "多模态LLM审查图片时使用的系统提示词，用于输出审查和图生图输入审查"
+  },
+  "llm_provider_id": {
+    "description": "LLM 提供商",
+    "type": "string",
+    "hint": "选择用于审查的 LLM 提供商，留空则使用会话默认提供商",
+    "_special": "select_provider",
+    "default": ""
+  },
+  "admin_bypass_censorship": {
+    "description": "管理员绕过审查",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后管理员发送的绘图请求将跳过审查系统"
+  },
+  "censorship_failure_mode": {
+    "description": "审查异常时的处理策略",
+    "type": "string",
+    "default": "fail_open",
+    "options": [
+      "fail_open",
+      "fail_closed"
+    ],
+    "hint": "LLM 审查异常（提供商挂掉、超时、API 报错）时的默认行为：fail_open 放行，fail_closed 拦截"
+  },
+  "enable_img2img_input_censorship": {
+    "description": "启用Qwen 图像输入审查",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后将对Qwen 图像用户输入的图片进行审查（通过多模态LLM审查图片）"
+  },
+  "img2img_input_censorship_use_llm": {
+    "description": "Qwen 图像输入审查使用多模态LLM",
+    "type": "bool",
+    "default": true,
+    "hint": "Qwen 图像输入审查时是否使用多模态LLM审查用户输入的图片"
+  },
+  "enable_img2img_output_censorship": {
+    "description": "启用Qwen 图像输出审查",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后将对Qwen 图像生成的图片进行审查"
+  },
+  "img2img_output_censorship_use_llm": {
+    "description": "Qwen 图像输出审查使用多模态LLM",
+    "type": "bool",
+    "default": true,
+    "hint": "Qwen 图像输出审查时是否使用多模态LLM直接审查图片内容"
+  },
+  "img2img_output_censorship_use_tagger": {
+    "description": "Qwen 图像输出审查使用Tagger",
+    "type": "bool",
+    "default": true,
+    "hint": "Qwen 图像输出审查时是否使用Tagger获取图片标签并进行关键词审查（无LLM参与）"
+  },
+  "mask_editor_public_url": {
+    "description": "局部重绘网页 HTTPS 地址",
+    "type": "string",
+    "default": "",
+    "hint": "填写用于独立涂抹服务的 HTTPS 根地址，服务在 AstrBot 容器内监听 6192。留空时关闭网页入口。配置后重载插件。"
+  },
+  "codex_fallback_enabled": {
+    "description": "ComfyUI 不可达时自动回退到 Codex OAuth 图片生成",
+    "type": "bool",
+    "default": true,
+    "hint": "每次生图前检查 ComfyUI /system_stats；服务恢复后自动优先使用 ComfyUI。"
+  },
+  "codex_fallback_provider_id": {
+    "description": "Codex OAuth 图片提供商 ID",
+    "type": "string",
+    "default": "oauth_plug_openai_codex",
+    "hint": "通常保持默认；仅当 Codex OAuth 提供商 ID 被自定义时修改。"
+  },
+  "codex_fallback_health_timeout": {
+    "description": "ComfyUI 健康检查超时（秒）",
+    "type": "int",
+    "default": 3,
+    "hint": "范围 0.5 至 10 秒；超出范围时运行时使用默认值 3 秒。"
+  }
+}
