@@ -288,5 +288,17 @@
     "type": "int",
     "default": 3,
     "hint": "范围 0.5 至 10 秒；超出范围时运行时使用默认值 3 秒。"
+  },
+  "prompt_enhance_provider_id": {
+    "description": "副脑提示词润色 LLM 提供商 ID",
+    "type": "string",
+    "default": "",
+    "hint": "用于“指令+润色”前缀（如 /draw 润色 猫娘）自动扩写提示词；留空时优先复用审查 LLM 提供商，否则使用当前会话默认 LLM。"
+  },
+  "idle_free_vram_minutes": {
+    "description": "闲置自动释放 ComfyUI 显存时间（分钟）",
+    "type": "int",
+    "default": 15,
+    "hint": "队列连续闲置满指定分钟后自动调用 ComfyUI /free 卸载模型释放显存；设为 0 关闭自动卸载。"
   }
 }

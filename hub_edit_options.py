@@ -643,8 +643,8 @@ class EditOptionsMixin:
         if image is None:
             return
         try:
-            mp, fast_turbo, source_mp, reject_reason = plan_tiled_upscale(
-                image, scale_factor=scale_factor, target_mp=target_mp
+            mp, fast_turbo, source_mp, reject_reason = await asyncio.to_thread(
+                plan_tiled_upscale, image, scale_factor=scale_factor, target_mp=target_mp
             )
         except Exception as error:
             await self._send_text_message(event, f"无法读取原图尺寸：{error}")
@@ -702,7 +702,7 @@ class EditOptionsMixin:
                 return
             ticket.generated = time.monotonic()
             ticket.status = "ready"
-            self._remember_reroll(event, {
+            await self._remember_reroll(event, {
                 "kind": "upscale",
                 "image_bytes": image,
                 "scale_factor": scale_factor,
@@ -745,7 +745,7 @@ class EditOptionsMixin:
             return
         staged_path = self.temp_dir / f"draw_edit_option_{uuid.uuid4().hex}.img"
         try:
-            staged_path.write_bytes(image)
+            await asyncio.to_thread(staged_path.write_bytes, image)
             options = [
                 {
                     "name": label,
@@ -871,7 +871,7 @@ class EditOptionsMixin:
                 return
             ticket.generated = time.monotonic()
             ticket.status = "ready"
-            self._remember_reroll(event, {
+            await self._remember_reroll(event, {
                 "kind": "multiview",
                 "image_bytes": image_bytes,
                 "mode": mode,
@@ -1001,7 +1001,7 @@ class EditOptionsMixin:
 
         staged_path = self.temp_dir / f"draw_edit_option_{uuid.uuid4().hex}.img"
         try:
-            staged_path.write_bytes(images[0])
+            await asyncio.to_thread(staged_path.write_bytes, images[0])
             menu_lines = [
                 f"请选择“{profile['command']}”的图片编辑方式：",
                 *[f"{index}. {option['name']}" for index, option in enumerate(options, start=1)],
@@ -1035,7 +1035,8 @@ class EditOptionsMixin:
 
     async def _run_draw_edit_options(self, event, record, options, additional_prompt=""):
         try:
-            images = [Path(path).read_bytes() for path in record.get("image_paths", [])]
+            image_paths = list(record.get("image_paths", []))
+            images = await asyncio.to_thread(lambda: [Path(path).read_bytes() for path in image_paths])
         except OSError:
             self._delete_draw_edit_record_files(record)
             await self._send_text_message(event, "这份改图菜单已过期或原图暂存失败，请重新引用原图发送“改图”。")
@@ -1160,8 +1161,8 @@ class EditOptionsMixin:
             if upscale_only:
                 upscale_arg = str((upscale_option or {}).get("upscale_arg", ""))
                 scale_factor, target_mp = self._parse_upscale_arg(upscale_arg)
-                mp, fast_turbo, source_mp, reject_reason = plan_tiled_upscale(
-                    images[0], scale_factor=scale_factor, target_mp=target_mp
+                mp, fast_turbo, source_mp, reject_reason = await asyncio.to_thread(
+                    plan_tiled_upscale, images[0], scale_factor=scale_factor, target_mp=target_mp
                 )
                 if reject_reason:
                     await self._send_text_message(event, reject_reason)

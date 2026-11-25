@@ -1,5 +1,17 @@
 # 更新日志
 
+## v1.5.1 - 2026-11-25
+
+### 新增功能
+- **副脑提示词润色（按需触发）**：在 `/draw`、`/draw_sd`、`/继续改`、`/img2video` 后加 `润色`（或 `润色：` / `--polish`）前缀时，自动调用副脑 LLM 按场景（文生图 / 改图 / SD 动漫标签 / 视频运镜）扩写提示词；不带前缀则原样直通 ComfyUI，不经过 LLM；新增 `prompt_enhance_provider_id` 配置项。
+- **闲置显存自动卸载守护**：新增 `idle_free_vram_minutes` 配置项（默认 15 分钟，设为 0 关闭），队列连续闲置满指定时长后自动调用 ComfyUI `/free` 卸载模型释放显存，避免长时间占用宿主机显存。
+
+### 性能与资源占用优化
+- **重画缓存原图磁盘化**：`/重画` 缓存的参考图、遮罩和 `MaskOriginal` 改为按 `SHA-256` 落盘复用（`temp/reroll_ref_*.bin`，24 小时自动清理），内存中仅保留路径索引，消除百兆级内存驻留。
+- **WebSocket 二进制成品图直传**：WebSocket 连通且 ComfyUI 支持 `SaveImageWebsocket` 时，动态将终端 `SaveImage` 节点切换为 WS 二进制流内存直传（兼容 `PREVIEW_IMAGE` 与 `PREVIEW_IMAGE_WITH_METADATA`），免除 ComfyUI `output/` 磁盘写入及 `/history` + `/view` 二次 HTTP 拉取；断连时自动回退传统通道。
+- **内网上传中间图 PNG 极速编码**：预处理上传图统一采用无损 `compress_level=1`，显著降低 CPU 压缩耗时。
+- **异步化剩余磁盘与图像 I/O**：菜单暂存读写、视频结果 MP4 写盘、`plan_tiled_upscale` 尺寸解析及 Codex 回退参考图编码全部迁移至 `asyncio.to_thread`，消除主事件循环阻塞。
+
 ## v1.5.0 - 2026-11-25
 
 ### 更名与项目独立

@@ -3,6 +3,7 @@ from collections import OrderedDict
 import hashlib
 import json
 from pathlib import Path
+import struct
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -53,6 +54,10 @@ class ComfyUIAPI:
         # WebSocket 事件通道：仅用于更快发现完成与获取进度，结果仍以 /history 为准，断线时自动退回轮询。
         self._ws_task = None
         self._ws_connected = False
+        self._ws_output_supported: Optional[bool] = None
+        self._ws_executing: tuple[Optional[str], Optional[str]] = (None, None)
+        self._ws_expected_nodes: dict[str, set[str]] = {}
+        self._ws_images: dict[str, dict[str, bytes]] = {}
         self._done = {}      # prompt_id -> (state, monotonic time)，state 为 "ok" / "error" / "interrupted"
         self._errors = {}    # prompt_id -> (node_type, exc_type, exc_msg, monotonic time)
         self._waiters = {}   # prompt_id -> asyncio.Event
@@ -105,6 +110,8 @@ class ComfyUIAPI:
                         async for message in ws:
                             if message.type == aiohttp.WSMsgType.TEXT:
                                 self._handle_ws_message(message.data)
+                            elif message.type == aiohttp.WSMsgType.BINARY:
+                                self._handle_ws_binary(message.data)
                             elif message.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                                 break
             except asyncio.CancelledError:
@@ -115,8 +122,85 @@ class ComfyUIAPI:
                 else:
                     logger.debug("[ComfyUI] WebSocket 连接失败：%s", type(error).__name__)
             self._ws_connected = False
+            self._ws_executing = (None, None)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30.0)
+
+    def _handle_ws_binary(self, payload: bytes):
+        """解析 ComfyUI WebSocket 二进制图片帧（支持 PREVIEW_IMAGE 与 PREVIEW_IMAGE_WITH_METADATA）。"""
+        if not payload or len(payload) < 8:
+            return
+        try:
+            event_type = struct.unpack(">I", payload[:4])[0]
+            meta = {}
+            if event_type == 1:
+                image_bytes = payload[8:]
+            elif event_type == 4:
+                meta_len = struct.unpack(">I", payload[4:8])[0]
+                if meta_len < 0 or 8 + meta_len > len(payload):
+                    return
+                meta = json.loads(payload[8:8 + meta_len].decode("utf-8", errors="ignore")) or {}
+                image_bytes = payload[8 + meta_len:]
+            else:
+                return
+            if not image_bytes:
+                return
+            prompt_id = meta.get("prompt_id") or self._ws_executing[0]
+            node_id = meta.get("node_id") or meta.get("real_node_id") or self._ws_executing[1]
+            if not prompt_id or not node_id:
+                return
+            prompt_id, node_id = str(prompt_id), str(node_id)
+            expected = self._ws_expected_nodes.get(prompt_id)
+            if not expected or node_id not in expected:
+                return
+            bucket = self._ws_images.setdefault(prompt_id, {})
+            if node_id not in bucket:
+                bucket[node_id] = bytes(image_bytes)
+            if expected.issubset(bucket.keys()):
+                event = self._waiters.get(prompt_id)
+                if event is not None:
+                    event.set()
+        except Exception as error:
+            logger.debug("[ComfyUI] 解析 WS 二进制图片帧失败：%s", type(error).__name__)
+
+    async def _supports_ws_output(self) -> bool:
+        """检查 ComfyUI 是否内置 SaveImageWebsocket 节点（结果按实例缓存）。"""
+        if self._ws_output_supported is not None:
+            return self._ws_output_supported
+        try:
+            async with self.session() as session:
+                async with session.get(
+                    f"{self.server_url}/object_info/SaveImageWebsocket",
+                    timeout=aiohttp.ClientTimeout(total=3.0, connect=2.0),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        self._ws_output_supported = isinstance(data, dict) and "SaveImageWebsocket" in data
+                        return self._ws_output_supported
+        except Exception:
+            pass
+        self._ws_output_supported = False
+        return False
+
+    @staticmethod
+    def _rewrite_for_ws_output(workflow: dict, target_nodes: list[str]) -> tuple[dict, set[str]]:
+        """在提交副本中将声明的终端 SaveImage 节点替换为 SaveImageWebsocket，避免写 output/ 磁盘。"""
+        cloned = dict(workflow)
+        rewritten = set()
+        for nid in target_nodes:
+            node = cloned.get(nid)
+            if (
+                isinstance(node, dict)
+                and node.get("class_type") == "SaveImage"
+                and isinstance(node.get("inputs"), dict)
+                and "images" in node["inputs"]
+            ):
+                cloned[nid] = {
+                    "class_type": "SaveImageWebsocket",
+                    "inputs": {"images": node["inputs"]["images"]},
+                }
+                rewritten.add(nid)
+        return cloned, rewritten
 
     def _handle_ws_message(self, raw):
         try:
@@ -136,8 +220,13 @@ class ComfyUIAPI:
                     callback(data.get("value"), data.get("max"), data.get("node"))
                 except Exception as error:
                     logger.debug("[ComfyUI] 进度回调异常：%s", type(error).__name__)
-        elif kind == "executing" and data.get("node") is None:
-            self._mark_done(prompt_id, "ok")
+        elif kind == "executing":
+            node = data.get("node")
+            if node is None:
+                self._ws_executing = (None, None)
+                self._mark_done(prompt_id, "ok")
+            else:
+                self._ws_executing = (prompt_id, str(node))
         elif kind == "execution_success":
             self._mark_done(prompt_id, "ok")
         elif kind == "execution_interrupted":
@@ -233,6 +322,8 @@ class ComfyUIAPI:
     def _forget(self, prompt_id: str):
         self._waiters.pop(prompt_id, None)
         self._progress.pop(prompt_id, None)
+        self._ws_expected_nodes.pop(prompt_id, None)
+        self._ws_images.pop(prompt_id, None)
 
     async def get_queue_info(self) -> dict:
         """获取 ComfyUI 队列状态（运行中和等待中的任务）
@@ -284,7 +375,7 @@ class ComfyUIAPI:
                               max_wait: Optional[float] = None,
                               on_wait_callback=None,
                               on_submitted_callback=None, on_reference=None,
-                              on_progress=None):
+                              on_progress=None, ws_expected_nodes: Optional[set[str]] = None):
         """直接提交工作流并通过 fetch_fn 获取结果（排队由外层 LocalImageGenerationQueue 或 ComfyUI 自身队列负责）。"""
         self._ensure_ws()  # 提前建立 WebSocket，避免错过早期事件
         logger.info(f"[ComfyUI] 开始提交{label}任务")
@@ -298,6 +389,8 @@ class ComfyUIAPI:
         if not prompt_id:
             logger.error("[ComfyUI] 提交任务失败")
             return None
+        if ws_expected_nodes:
+            self._ws_expected_nodes[prompt_id] = set(ws_expected_nodes)
         if on_progress is not None:
             self._progress[prompt_id] = on_progress
         self._ensure_ws()
@@ -354,7 +447,14 @@ class ComfyUIAPI:
     async def queue_and_wait_image(self, workflow: dict, max_wait: Optional[float] = None,
                                    on_wait_callback=None, on_submitted_callback=None,
                                    output_node: Optional[str] = None, on_result_reference=None,
-                                   on_progress=None) -> Optional[bytes]:
+                                   on_progress=None, *, prefer_ws_output: bool = True) -> Optional[bytes]:
+        submit_workflow = workflow
+        ws_nodes = None
+        if prefer_ws_output and output_node and self._ws_connected and await self._supports_ws_output():
+            submit_workflow, rewritten = self._rewrite_for_ws_output(workflow, [str(output_node)])
+            if rewritten:
+                ws_nodes = rewritten
+
         async def fetch(prompt_id: str, total_timeout: float):
             return await self.wait_result(prompt_id, output_node=output_node, total_timeout=total_timeout)
 
@@ -363,20 +463,30 @@ class ComfyUIAPI:
                 await on_result_reference(prompt_id, output_node)
 
         return await self._queue_and_wait(
-            workflow, fetch, "图片",
+            submit_workflow, fetch, "图片",
             max_wait=max_wait,
             on_wait_callback=on_wait_callback,
             on_submitted_callback=on_submitted_callback,
             on_reference=record,
             on_progress=on_progress,
+            ws_expected_nodes=ws_nodes,
         )
 
     async def queue_and_wait_images(self, workflow: dict, output_nodes: list[str],
                                     max_wait: Optional[float] = None,
                                     on_wait_callback=None, on_submitted_callback=None,
-                                    on_result_reference=None, on_progress=None) -> Optional[list[bytes]]:
+                                    on_result_reference=None, on_progress=None,
+                                    *, prefer_ws_output: bool = True) -> Optional[list[bytes]]:
         """提交工作流并按指定输出节点顺序等待多张图片结果。"""
         nodes = [str(n) for n in output_nodes]
+        submit_workflow = workflow
+        ws_nodes = None
+        if prefer_ws_output and nodes and self._ws_connected and await self._supports_ws_output():
+            submit_workflow, rewritten = self._rewrite_for_ws_output(workflow, nodes)
+            if len(rewritten) == len(nodes):
+                ws_nodes = rewritten
+            else:
+                submit_workflow = workflow
 
         async def fetch(prompt_id: str, total_timeout: float):
             return await self.wait_results(prompt_id, nodes, total_timeout=total_timeout)
@@ -386,12 +496,13 @@ class ComfyUIAPI:
                 await on_result_reference(prompt_id, nodes[-1] if nodes else None)
 
         return await self._queue_and_wait(
-            workflow, fetch, "图片",
+            submit_workflow, fetch, "图片",
             max_wait=max_wait,
             on_wait_callback=on_wait_callback,
             on_submitted_callback=on_submitted_callback,
             on_reference=record,
             on_progress=on_progress,
+            ws_expected_nodes=ws_nodes,
         )
 
     async def queue_and_wait_video(self, workflow: dict, max_wait: Optional[float] = None,
@@ -527,21 +638,34 @@ class ComfyUIAPI:
     async def wait_result(self, prompt_id: str, extra_timeout: int = 0,
                           output_node: Optional[str] = None, *,
                           total_timeout: Optional[float] = None) -> Optional[bytes]:
-        """等待并下载图片结果
-
-        Args:
-            prompt_id: 任务ID
-            extra_timeout: 额外超时秒数，用于强制提交时补偿队列排队时间
-        """
+        """等待并下载图片结果（若启用 SaveImageWebsocket 且已通过 WS 收到二进制图，直接内存返回）。"""
         if total_timeout is None:
             total_timeout = self.timeout + extra_timeout
         loop = asyncio.get_event_loop()
         deadline = loop.time() + total_timeout
+        ws_mode = bool(output_node and prompt_id in self._ws_expected_nodes and str(output_node) in self._ws_expected_nodes[prompt_id])
         async with self.session() as session:
             while loop.time() < deadline:
+                if ws_mode:
+                    ws_data = self._ws_images.get(prompt_id, {}).get(str(output_node))
+                    if ws_data:
+                        logger.info("[ComfyUI] 任务 %s 通过 WebSocket 二进制直传取得图片（%d 字节）", prompt_id, len(ws_data))
+                        return ws_data
                 if not await self._pace(prompt_id):
+                    if ws_mode:
+                        ws_data = self._ws_images.get(prompt_id, {}).get(str(output_node))
+                        if ws_data:
+                            return ws_data
                     logger.error("[ComfyUI] 任务 %s 已结束但迟迟没有结果记录", prompt_id)
                     return None
+                if ws_mode:
+                    ws_data = self._ws_images.get(prompt_id, {}).get(str(output_node))
+                    if ws_data:
+                        logger.info("[ComfyUI] 任务 %s 通过 WebSocket 二进制直传取得图片（%d 字节）", prompt_id, len(ws_data))
+                        return ws_data
+                    done = self._done.get(prompt_id)
+                    if done is None or done[0] == "ok":
+                        continue
                 status, data = await self._fetch_image_once(session, prompt_id, output_node)
                 if status == "ready":
                     return data
@@ -552,16 +676,42 @@ class ComfyUIAPI:
 
     async def wait_results(self, prompt_id: str, output_nodes: list[str], extra_timeout: int = 0, *,
                            total_timeout: Optional[float] = None) -> Optional[list[bytes]]:
-        """等待并按顺序下载多个输出节点的图片结果。"""
+        """等待并按顺序下载多个输出节点的图片结果（支持 WebSocket 二进制直传）。"""
         if total_timeout is None:
             total_timeout = self.timeout + extra_timeout
         loop = asyncio.get_event_loop()
         deadline = loop.time() + total_timeout
+        expected = self._ws_expected_nodes.get(prompt_id)
+        ws_mode = bool(expected and all(n in expected for n in output_nodes))
+
+        def _try_ws_collect():
+            bucket = self._ws_images.get(prompt_id)
+            if bucket and all(n in bucket for n in output_nodes):
+                return [bucket[n] for n in output_nodes]
+            return None
+
         async with self.session() as session:
             while loop.time() < deadline:
+                if ws_mode:
+                    ws_list = _try_ws_collect()
+                    if ws_list is not None:
+                        logger.info("[ComfyUI] 任务 %s 通过 WebSocket 二进制直传取得 %d 张图片", prompt_id, len(ws_list))
+                        return ws_list
                 if not await self._pace(prompt_id):
+                    if ws_mode:
+                        ws_list = _try_ws_collect()
+                        if ws_list is not None:
+                            return ws_list
                     logger.error("[ComfyUI] 任务 %s 已结束但迟迟没有结果记录", prompt_id)
                     return None
+                if ws_mode:
+                    ws_list = _try_ws_collect()
+                    if ws_list is not None:
+                        logger.info("[ComfyUI] 任务 %s 通过 WebSocket 二进制直传取得 %d 张图片", prompt_id, len(ws_list))
+                        return ws_list
+                    done = self._done.get(prompt_id)
+                    if done is None or done[0] == "ok":
+                        continue
                 status, images_data = await self._fetch_images_once(session, prompt_id, output_nodes)
                 if status == "ready":
                     return images_data

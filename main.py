@@ -87,6 +87,13 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
         self._resending_images = set()
         self._cleanup_orphaned_draw_edit_option_files()
         self._generated_media_cleanup_task: Optional[asyncio.Task] = None
+        self._idle_vram_guard_task: Optional[asyncio.Task] = None
+        self.prompt_enhance_provider_id = str(config.get("prompt_enhance_provider_id", "") or "").strip()
+        try:
+            idle_minutes = int(config.get("idle_free_vram_minutes", 15))
+            self.idle_free_vram_minutes = max(0, idle_minutes)
+        except (TypeError, ValueError):
+            self.idle_free_vram_minutes = 15
 
         self.block_tags_file = data_dir / "block_tags.json"
         self.output_block_tags_file = data_dir / "output_block_tags.json"
@@ -171,13 +178,19 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
         self._generated_media_cleanup_task = asyncio.create_task(
             self._run_generated_media_cleanup()
         )
+        if self.idle_free_vram_minutes > 0:
+            self._idle_vram_guard_task = asyncio.create_task(
+                self._run_idle_vram_guard()
+            )
 
     async def terminate(self):
         await self._mask_editor.close()
-        if self._generated_media_cleanup_task is not None:
-            self._generated_media_cleanup_task.cancel()
-            await asyncio.gather(self._generated_media_cleanup_task, return_exceptions=True)
-            self._generated_media_cleanup_task = None
+        for bg_attr in ("_generated_media_cleanup_task", "_idle_vram_guard_task"):
+            bg_task = getattr(self, bg_attr, None)
+            if bg_task is not None:
+                bg_task.cancel()
+                await asyncio.gather(bg_task, return_exceptions=True)
+                setattr(self, bg_attr, None)
         flush_task = getattr(self, "_sent_messages_flush_task", None)
         if flush_task is not None and not flush_task.done():
             flush_task.cancel()
@@ -185,6 +198,25 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
         await self._flush_sent_messages()
         await self._close_download_session()
         await self.api.close()
+
+    async def _run_idle_vram_guard(self):
+        """队列连续闲置满指定分钟后自动调用 ComfyUI /free 卸载模型释放显存。"""
+        while True:
+            await asyncio.sleep(60)
+            minutes = self.idle_free_vram_minutes
+            if minutes <= 0:
+                continue
+            idle_seconds = self._image_generation_queue.idle_seconds_needing_free()
+            if idle_seconds is None or idle_seconds < minutes * 60:
+                continue
+            try:
+                ok = await self.api.free_memory(unload_models=True, free_memory=True)
+                self._image_generation_queue.mark_vram_freed()
+                if ok:
+                    logger.info("[ComfyUI] 队列已连续闲置 %d 分钟，已自动释放 ComfyUI 显存与缓存", minutes)
+            except Exception as error:
+                self._image_generation_queue.mark_vram_freed()
+                logger.warning("[ComfyUI] 闲置自动释放显存失败：%s", type(error).__name__)
 
     async def _run_generated_media_cleanup(self):
         while True:
@@ -197,14 +229,18 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
             await asyncio.sleep(GENERATED_MEDIA_CLEANUP_INTERVAL)
 
     def _delete_expired_generated_media(self) -> int:
-        cutoff = time.time() - GENERATED_MEDIA_TTL_SECONDS
+        now = time.time()
+        cutoff = now - GENERATED_MEDIA_TTL_SECONDS
+        reroll_cutoff = now - 86400
         removed = 0
         for path in self.temp_dir.iterdir():
-            if not (GENERATED_MEDIA_FILENAME.fullmatch(path.name) or IMAGE_RESEND_FILENAME.fullmatch(path.name)):
+            is_reroll = path.name.startswith("reroll_ref_") and path.name.endswith(".bin")
+            if not (is_reroll or GENERATED_MEDIA_FILENAME.fullmatch(path.name) or IMAGE_RESEND_FILENAME.fullmatch(path.name)):
                 continue
             try:
                 info = path.lstat()
-                if stat.S_ISREG(info.st_mode) and info.st_mtime < cutoff:
+                limit = reroll_cutoff if is_reroll else cutoff
+                if stat.S_ISREG(info.st_mode) and info.st_mtime < limit:
                     path.unlink()
                     removed += 1
             except FileNotFoundError:
@@ -415,6 +451,14 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
                 yield event.plain_result(message)
             return
         positive, negative, chain, width, height, scale = self._parse_params(text)
+        positive, wants_polish = self._extract_polish_prefix(positive)
+        if wants_polish and positive:
+            enhanced, ok = await self._enhance_prompt_with_llm(event, positive, mode="sd")
+            if ok:
+                positive = enhanced
+                await self._send_text_message(event, f"✨ 润色后提示词：{positive}")
+            else:
+                await self._send_text_message(event, "⚠️ 提示词润色失败，已使用原始提示词继续生成。")
         task, data, error = await self._generate_image(event, "sd", positive, negative, width, height, scale)
         if data is None:
             if error:
@@ -602,6 +646,7 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
             if message:
                 yield event.plain_result(message)
             return
+        text, wants_polish = self._extract_polish_prefix(text)
 
         text, aspect_ratio, ratio_error = self._extract_draw_aspect_ratio(text)
         if ratio_error:
@@ -694,6 +739,22 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
                     return
                 reference_images = [image]
 
+        if wants_polish and positive.strip():
+            has_ref_image = bool(reference_images) or any(
+                self._is_edit_image(item) for item in (event.get_messages() or [])
+            ) or any(
+                isinstance(m, Reply) and m.chain and any(self._is_edit_image(c) for c in m.chain)
+                for m in (event.get_messages() or [])
+            )
+            enhanced, ok = await self._enhance_prompt_with_llm(
+                event, positive, mode="edit" if has_ref_image else "qwen"
+            )
+            if ok:
+                positive = enhanced
+                await self._send_text_message(event, f"✨ 润色后提示词：{positive}")
+            else:
+                await self._send_text_message(event, "⚠️ 提示词润色失败，已使用原始提示词继续生成。")
+
         task, data, error = await self._generate_image(
             event, "qwen", positive, negative, width, height, scale,
             mode="auto", lora_selection=lora_selection, reference_images=reference_images,
@@ -734,6 +795,7 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
             yield event.plain_result("请在命令后写明修改要求，例如：/继续改 把背景换成海边日落")
             event.stop_event()
             return
+        text, wants_polish = self._extract_polish_prefix(text)
         text, lora_selection, lora_error = self._parse_draw_lora_args(text)
         if lora_error:
             yield event.plain_result(lora_error)
@@ -744,6 +806,13 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
             yield event.plain_result("请输入修改要求，例如：/继续改 把头发改成银白色")
             event.stop_event()
             return
+        if wants_polish:
+            enhanced, ok = await self._enhance_prompt_with_llm(event, positive, mode="edit")
+            if ok:
+                positive = enhanced
+                await self._send_text_message(event, f"✨ 润色后提示词：{positive}")
+            else:
+                await self._send_text_message(event, "⚠️ 提示词润色失败，已使用原始提示词继续生成。")
         task, data, error = await self._generate_image(
             event, "qwen", positive, negative, width, height, scale,
             mode="edit", reference_images=[last_image], lora_selection=lora_selection,
@@ -797,6 +866,7 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
     @_stop_matched_command
     async def cmd_img2video(self, event: AstrMessageEvent):
         text = _strip_command_prefix(event.message_str.strip(), IMG2VIDEO_ALIASES)
+        text, wants_polish = self._extract_polish_prefix(text)
         positive, negative, _chain, _width, _height, _scale = self._parse_params(text)
         # 从 positive 中再额外提取 fps / length
         fps_value: Optional[float] = None
@@ -814,6 +884,14 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
                 length_value = float(m.group(1))
                 positive = re.sub(length_pattern, '', positive, flags=re.IGNORECASE).strip()
 
+        if wants_polish and positive.strip():
+            enhanced, ok = await self._enhance_prompt_with_llm(event, positive, mode="video")
+            if ok:
+                positive = enhanced
+                await self._send_text_message(event, f"✨ 润色后提示词：{positive}")
+            else:
+                await self._send_text_message(event, "⚠️ 提示词润色失败，已使用原始提示词继续生成。")
+
         generated, error = await self._generate_video(event, positive, negative, fps=fps_value, length=length_value)
         if generated is None:
             if error:
@@ -823,7 +901,7 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
         temp_file = self.temp_dir / f"{uuid.uuid4().hex}.mp4"
         saved = False
         try:
-            temp_file.write_bytes(video_data)
+            await asyncio.to_thread(temp_file.write_bytes, video_data)
             saved = True
             await self._send_generated_video(event, temp_file)
         except Exception as error:
@@ -842,7 +920,7 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
             if reject_msg:
                 await self._send_text_message(event, reject_msg)
             return
-        spec = self._get_reroll_spec(event)
+        spec = await self._materialize_reroll_spec(event)
         if spec is None:
             await self._send_text_message(
                 event, "当前会话没有可重画的最近任务（记录保留 30 分钟），请先生成一次图片或视频。"
@@ -884,7 +962,7 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
             temp_file = self.temp_dir / f"{uuid.uuid4().hex}.mp4"
             saved = False
             try:
-                temp_file.write_bytes(video_data)
+                await asyncio.to_thread(temp_file.write_bytes, video_data)
                 saved = True
                 await self._send_generated_video(event, temp_file)
             except Exception as error:
@@ -1030,6 +1108,7 @@ class ComfyUIHub(EditOptionsMixin, WebApiMixin, ModerationMixin, MessagingMixin,
             event.stop_event()
             return
         if await self.api.free_memory(unload_models=True, free_memory=True):
+            self._image_generation_queue.mark_vram_freed()
             yield event.plain_result("✅ 已请求 ComfyUI 卸载模型并释放显存与缓存。")
         else:
             yield event.plain_result("⚠️ 请求 ComfyUI 释放显存失败，请检查 ComfyUI 是否在线。")

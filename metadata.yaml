@@ -1,7 +1,7 @@
 name: astrbot_plugin_multi_studio
 display_name: 喵蛋的多模态工作台
 desc: 面向 AstrBot 的 ComfyUI 多模态创作工作台，支持 Qwen 2.1 文生图/多图编辑/改图菜单、6 种多视图与三视图分镜双图生成、网页局部重绘与 SAM3 自动遮罩、一键抠图、分块高清放大、SD 动漫生图、图生视频、标签识别、一键重画及任务队列管理。
-version: v1.5.0
+version: v1.5.1
 astrbot_version: ">=4.25.1"
 author: Nyapoi
 repo: https://github.com/goblieve/astrbot_plugin_multi_studio

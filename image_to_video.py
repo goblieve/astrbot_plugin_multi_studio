@@ -32,7 +32,7 @@ class ImageToVideo:
                     if img.mode != 'RGB':
                         img = img.convert('RGB')
                     output = BytesIO()
-                    img.save(output, format='PNG')
+                    img.save(output, format='PNG', compress_level=1)
                     return output.getvalue()
                 return image_data
         except Exception as e:

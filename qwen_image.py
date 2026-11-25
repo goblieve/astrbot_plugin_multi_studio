@@ -211,7 +211,7 @@ class QwenImage(VisualLoRAControls):
                 target_height = (scaled_height // 32) * 32
                 image = image.resize((target_width, target_height), PILImage.Resampling.LANCZOS)
             output = BytesIO()
-            image.save(output, format="PNG")
+            image.save(output, format="PNG", compress_level=1)
             return output.getvalue()
     @staticmethod
     def _linked_node_ids(value, workflow):

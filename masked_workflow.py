@@ -75,7 +75,7 @@ def _lora_path(row):
 
 def _png(image):
     output = BytesIO()
-    image.save(output, format="PNG", compress_level=2)
+    image.save(output, format="PNG", compress_level=1)
     return output.getvalue()
 
 

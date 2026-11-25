@@ -1,7 +1,9 @@
+import asyncio
 import math
 import re
 from fractions import Fraction
 from typing import Optional
+from astrbot.api import logger
 
 
 class PromptingMixin:
@@ -197,6 +199,70 @@ class PromptingMixin:
 
         return (params['positive'], params['negative'], params['chain'],
                 params['width'], params['height'], params['scale'])
+
+    @staticmethod
+    def _extract_polish_prefix(text: str) -> tuple[str, bool]:
+        """检测指令文本开头是否包含“润色”前缀（仅带前缀时才启用副脑 LLM 扩写）。"""
+        raw = str(text or "").strip()
+        if not raw:
+            return "", False
+        match = re.match(r"^(?:润色|--?(?:polish|enhance))(?:\s*[:：]\s*|\s+)(.+)$", raw, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return raw, False
+        return match.group(1).strip(), True
+
+    async def _enhance_prompt_with_llm(self, event, prompt: str, *, mode: str = "qwen") -> tuple[str, bool]:
+        """调用副脑 LLM 对简短提示词进行定向润色扩写；失败或超时时回退原提示词。"""
+        text = str(prompt or "").strip()
+        if not text:
+            return text, False
+        system_prompts = {
+            "qwen": (
+                "你是专业 AI 绘图提示词润色助手。将用户的简短描述扩写为自然、具体、可直接用于文生图的中文画面描述，"
+                "合理补充主体外貌与服饰、姿势神态、场景环境、构图视角、光线与色彩氛围以及材质细节。"
+                "严格忠实于用户原意，不凭空增加无关人物或情节，不堆砌空泛画质词。只输出润色后的提示词本身，不要任何解释、标题或引号。"
+            ),
+            "edit": (
+                "你是专业 AI 改图指令润色助手。将用户的简短改图要求整理为清晰、可执行、局部可控的中文图像编辑指令，"
+                "明确目标对象、修改后的外观材质与光影融合要求，并强调保留未要求修改的主体身份、姿势与背景。"
+                "只输出润色后的编辑指令本身，不要任何解释、标题或引号。"
+            ),
+            "sd": (
+                "You are a Danbooru-style anime prompt assistant. Expand the user's short idea into clean, high-quality "
+                "comma-separated English tags/phrases for Stable Diffusion anime generation (subject, outfit, pose, expression, "
+                "background, lighting, composition). Stay strictly faithful to the user's intent. Output tags only, no explanations or quotes."
+            ),
+            "video": (
+                "你是专业图生视频运镜提示词助手。将用户的简短想法扩写为流畅自然的动态与镜头描述（主体动作、微表情、衣发飘动、光影变化与运镜节奏），"
+                "适合图生视频模型执行，不凭空新增无关人物或突兀转场。只输出润色后的提示词本身，不要任何解释、标题或引号。"
+            ),
+        }
+        system_prompt = system_prompts.get(mode, system_prompts["qwen"])
+        try:
+            provider_id = str(getattr(self, "prompt_enhance_provider_id", "") or "").strip()
+            if not provider_id:
+                provider_id = str(getattr(self, "llm_provider_id", "") or "").strip()
+            if not provider_id:
+                provider_id = await self.context.get_current_chat_provider_id(umo=event.unified_msg_origin)
+            if not provider_id:
+                logger.warning("[ComfyUI] 副脑提示词润色失败：未找到可用的 LLM 提供商")
+                return text, False
+            response = await asyncio.wait_for(
+                self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    system_prompt=system_prompt,
+                    prompt=text,
+                ),
+                timeout=15.0,
+            )
+            enhanced = str(getattr(response, "completion_text", "") or "").strip()
+            enhanced = enhanced.strip("`\"'“”").strip()
+            if not enhanced or len(enhanced) > 2000:
+                return text, False
+            return enhanced, True
+        except Exception as error:
+            logger.warning("[ComfyUI] 副脑提示词润色异常（已回退原提示词）：%s", type(error).__name__)
+            return text, False
 
     @staticmethod
     def _image_task_owner(event):

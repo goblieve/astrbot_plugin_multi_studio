@@ -1,5 +1,6 @@
 import aiohttp
 import asyncio
+import hashlib
 import json
 import time
 import uuid
@@ -10,7 +11,7 @@ from io import BytesIO
 from pathlib import Path
 from .comfyui_api import ComfyUIExecutionError, ComfyUIResultUnavailable, ComfyUISubmissionUncertain, ComfyUIUnavailable
 from .llm_tools import COMPLETION_FEEDBACK_HINT
-from .masked_workflow import MaskedWorkflow, plan_tiled_upscale, tiled_upscale_image
+from .masked_workflow import MaskOriginal, MaskedWorkflow, plan_tiled_upscale, tiled_upscale_image
 
 
 class GenerationMixin:
@@ -42,7 +43,32 @@ class GenerationMixin:
     REROLL_TTL_SECONDS = 30 * 60
     REROLL_MAX_ENTRIES = 32
 
-    def _remember_reroll(self, event: AstrMessageEvent, spec: dict):
+    def _save_reroll_blob_sync(self, data: bytes) -> str:
+        digest = hashlib.sha256(data).hexdigest()[:24]
+        path = self.temp_dir / f"reroll_ref_{digest}.bin"
+        if path.is_file():
+            try:
+                path.touch()
+            except OSError:
+                pass
+            return str(path)
+        tmp = path.with_suffix(".tmp")
+        try:
+            tmp.write_bytes(data)
+            tmp.replace(path)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return str(path)
+
+    @staticmethod
+    def _read_reroll_blob_sync(path_str: str):
+        path = Path(path_str)
+        if not path.is_file():
+            return None
+        return path.read_bytes()
+
+    async def _remember_reroll(self, event: AstrMessageEvent, spec: dict):
+        """将最近一次成功的生成参数写入轻量内存索引，原图/遮罩大字节落盘复用 SHA-256 缓存文件。"""
         store = getattr(self, "_last_generation_params", None)
         if store is None:
             store = {}
@@ -50,9 +76,41 @@ class GenerationMixin:
         now = time.monotonic()
         for key in [k for k, v in store.items() if now - v.get("created_at", 0) > self.REROLL_TTL_SECONDS]:
             store.pop(key, None)
+
+        compact = dict(spec)
+        try:
+            if isinstance(compact.get("image_bytes"), (bytes, bytearray)):
+                compact["image_bytes_path"] = await asyncio.to_thread(
+                    self._save_reroll_blob_sync, bytes(compact.pop("image_bytes"))
+                )
+            if isinstance(compact.get("reference_images"), list):
+                paths = []
+                for item in compact.pop("reference_images"):
+                    if isinstance(item, (bytes, bytearray)):
+                        paths.append(await asyncio.to_thread(self._save_reroll_blob_sync, bytes(item)))
+                compact["reference_image_paths"] = paths or None
+            if isinstance(compact.get("edit_mask"), (bytes, bytearray)):
+                compact["edit_mask_path"] = await asyncio.to_thread(
+                    self._save_reroll_blob_sync, bytes(compact.pop("edit_mask"))
+                )
+            native_orig = compact.get("native_mask_original")
+            if isinstance(native_orig, MaskOriginal):
+                compact.pop("native_mask_original", None)
+                compact["native_mask_original_ref"] = {
+                    "data_path": await asyncio.to_thread(self._save_reroll_blob_sync, native_orig.data),
+                    "preview_path": await asyncio.to_thread(self._save_reroll_blob_sync, native_orig.preview),
+                    "size": native_orig.size,
+                    "extension": native_orig.extension,
+                    "preview_size": native_orig.preview_size,
+                    "preview_extension": native_orig.preview_extension,
+                }
+        except OSError as error:
+            logger.warning("[ComfyUI] 保存重画原图缓存失败：%s", type(error).__name__)
+            return
+
         owner = self._image_task_owner(event)
         store.pop(owner, None)
-        store[owner] = {**spec, "created_at": now}
+        store[owner] = {**compact, "created_at": now}
         while len(store) > self.REROLL_MAX_ENTRIES:
             oldest = next(iter(store))
             store.pop(oldest, None)
@@ -67,6 +125,50 @@ class GenerationMixin:
             return None
         if time.monotonic() - spec.get("created_at", 0) > self.REROLL_TTL_SECONDS:
             store.pop(owner, None)
+            return None
+        return spec
+
+    async def _materialize_reroll_spec(self, event: AstrMessageEvent):
+        """从磁盘缓存恢复重画所需的原始图片与遮罩字节。"""
+        raw = self._get_reroll_spec(event)
+        if raw is None:
+            return None
+        spec = dict(raw)
+        try:
+            if "image_bytes_path" in spec:
+                data = await asyncio.to_thread(self._read_reroll_blob_sync, spec.pop("image_bytes_path"))
+                if data is None:
+                    return None
+                spec["image_bytes"] = data
+            if "reference_image_paths" in spec:
+                paths = spec.pop("reference_image_paths")
+                if paths:
+                    loaded = []
+                    for p in paths:
+                        data = await asyncio.to_thread(self._read_reroll_blob_sync, p)
+                        if data is None:
+                            return None
+                        loaded.append(data)
+                    spec["reference_images"] = loaded
+                else:
+                    spec["reference_images"] = None
+            if "edit_mask_path" in spec:
+                mask = await asyncio.to_thread(self._read_reroll_blob_sync, spec.pop("edit_mask_path"))
+                if mask is None:
+                    return None
+                spec["edit_mask"] = mask
+            if "native_mask_original_ref" in spec:
+                ref = spec.pop("native_mask_original_ref")
+                orig_data = await asyncio.to_thread(self._read_reroll_blob_sync, ref["data_path"])
+                orig_preview = await asyncio.to_thread(self._read_reroll_blob_sync, ref["preview_path"])
+                if orig_data is None or orig_preview is None:
+                    return None
+                spec["native_mask_original"] = MaskOriginal(
+                    orig_data, ref["size"], ref["extension"],
+                    orig_preview, ref["preview_size"], ref["preview_extension"],
+                )
+        except OSError as error:
+            logger.warning("[ComfyUI] 读取重画原图缓存失败：%s", type(error).__name__)
             return None
         return spec
 
@@ -223,6 +325,12 @@ class GenerationMixin:
             return None, "当前 Codex OAuth 提供商没有启用图片生成接口。"
         return None, f"未找到 Codex OAuth 图片提供商（{provider_id}）；请确认插件已启用且提供商已注册。"
 
+    @staticmethod
+    def _save_codex_ref_png(image_data: bytes, reference_path: Path):
+        with PILImage.open(BytesIO(image_data)) as reference_image:
+            reference_image.load()
+            reference_image.save(reference_path, format="PNG", compress_level=1)
+
     async def _generate_with_codex(self, prompt, negative=None, width=None, height=None, images=None):
         provider, error = self._select_codex_image_provider()
         if provider is None:
@@ -233,9 +341,7 @@ class GenerationMixin:
         try:
             for image_data in images or []:
                 reference_path = self.temp_dir / f"codex_fallback_ref_{uuid.uuid4().hex}.png"
-                with PILImage.open(BytesIO(image_data)) as reference_image:
-                    reference_image.load()
-                    reference_image.save(reference_path, format="PNG")
+                await asyncio.to_thread(self._save_codex_ref_png, image_data, reference_path)
                 reference_paths.append(str(reference_path))
 
             image_prompt = str(prompt or "").strip()
@@ -298,8 +404,8 @@ class GenerationMixin:
 
         try:
             scale_factor, target_mp = self._parse_upscale_arg(upscale_arg)
-            mp, fast, source_mp, rejection = plan_tiled_upscale(
-                data, scale_factor=scale_factor, target_mp=target_mp
+            mp, fast, source_mp, rejection = await asyncio.to_thread(
+                plan_tiled_upscale, data, scale_factor=scale_factor, target_mp=target_mp
             )
             if rejection:
                 await self._send_text_message(event, f"{label}已完成（{rejection}）")
@@ -497,7 +603,7 @@ class GenerationMixin:
                         notify=notify_progress, task=task
                     )
                     if backend == "qwen" and qwen_workflow_upscale_only:
-                        mp, fast_turbo, source_mp, reject_reason = plan_tiled_upscale(images[0])
+                        mp, fast_turbo, source_mp, reject_reason = await asyncio.to_thread(plan_tiled_upscale, images[0])
                         if reject_reason:
                             return None, reject_reason
                         mp_label = int(mp) if mp == int(mp) else round(mp, 2)
@@ -616,7 +722,7 @@ class GenerationMixin:
         )
         safe, message = await self._check_output_censorship(event, data, source_name)
         if safe:
-            self._remember_reroll(event, {
+            await self._remember_reroll(event, {
                 "kind": "image",
                 "backend": backend,
                 "prompt": prompt,
@@ -685,7 +791,7 @@ class GenerationMixin:
                 if data:
                     ticket.generated = time.monotonic()
                     ticket.status = "ready"
-                    self._remember_reroll(event, {
+                    await self._remember_reroll(event, {
                         "kind": "video",
                         "image_bytes": images[0],
                         "prompt": prompt,
@@ -787,7 +893,7 @@ class GenerationMixin:
         ticket, data = generated
         path = self.temp_dir / f"{uuid.uuid4().hex}.mp4"
         try:
-            path.write_bytes(data)
+            await asyncio.to_thread(path.write_bytes, data)
             result["file_path"] = str(path.resolve())
             await self._send_generated_video(event, path)
         except Exception as error:

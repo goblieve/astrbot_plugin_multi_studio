@@ -80,6 +80,8 @@ class LocalImageGenerationQueue:
         self._tickets = []
         self._history = OrderedDict()
         self._last_model_group: str = ""
+        self._last_activity: float | None = None
+        self._vram_dirty: bool = False
 
     def _prune(self):
         cutoff = time.monotonic() - 7 * 86400
@@ -127,14 +129,25 @@ class LocalImageGenerationQueue:
             ticket.started = time.monotonic()
             ticket.status = "generating"
             self._last_model_group = ticket.model_group
+            self._last_activity = ticket.started
+            self._vram_dirty = True
             return True
 
     async def release(self, ticket):
         async with self._condition:
             if ticket in self._tickets:
                 self._tickets.remove(ticket)
+                self._last_activity = time.monotonic()
                 self._reorder_for_affinity()
                 self._condition.notify_all()
+
+    def idle_seconds_needing_free(self) -> float | None:
+        if self._tickets or not self._vram_dirty or self._last_activity is None:
+            return None
+        return max(0.0, time.monotonic() - self._last_activity)
+
+    def mark_vram_freed(self):
+        self._vram_dirty = False
 
     async def cancel(self, ticket):
         async with self._condition:
